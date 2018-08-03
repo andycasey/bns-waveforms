@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import optimize as op
+from astropy.table import  Table
 
 
 with open("input_variables.pkl", "rb") as fp:
@@ -13,6 +14,16 @@ labels, label_names, waveform_names, waveform_amplitude, maximum_amplitude, \
 
 with open("pl_params.pkl", "rb") as fp:
     eos_descr, eos_parameters, eos_coeff = pickle.load(fp)
+
+
+labels = Table.from_pandas(labels)
+
+# Calculate tidal Love number for equal mass binaries (eq 14 of 1604.00246)
+labels["lambda"] = (2.0/3.0) * labels["Meank2"] * labels["MeanR"]**5
+
+# Calculate dimensionless tidal deformability (p12 of 1604.00246).
+labels["Lambda"] = (labels["lambda"]/labels["M1"]**5)**(1.0/5)
+
 
 
 # params = alpha*M1**beta
@@ -249,4 +260,4 @@ for i in range(N):
     print(i, ff)
 
     fitting_factors[i] = ff
-    
+
