@@ -25,7 +25,6 @@ labels["lambda"] = (2.0/3.0) * labels["Meank2"] * labels["MeanR"]**5
 labels["Lambda"] = (labels["lambda"]/labels["M1"]**5)**(1.0/5)
 
 
-
 # params = alpha*M1**beta
 eos_descriptions = [ea.split("-")[0] for ea in waveform_names]
 unique_eos_descriptions = list(set([ea for ea in eos_descriptions]))
@@ -97,7 +96,7 @@ model = load_stan_model("model.stan")
 
 N, M, D = (len(x), len(unique_eos_descriptions), 1)
 
-for label_name in ("C", "Kappa_calc", "Mb", "Meank2", "MoI"):
+for label_name in ("C", "Kappa_calc", "Mb", "Meank2", "MoI", "f2"):
 
     y = np.atleast_2d(labels[label_name]).reshape((-1, 1))
 
@@ -129,9 +128,11 @@ for label_name in ("C", "Kappa_calc", "Mb", "Meank2", "MoI"):
     ax.set_title(label_name)
 
 
+ 
+
 model = load_stan_model("model.stan")
 
-fit_label_names = ("C", "Kappa_calc", "Mb", "MoI")
+fit_label_names = ("C", "Kappa_calc", "Mb", "MoI", "f2")
 D = len(fit_label_names)
 
 y = np.array([labels[ln] for ln in fit_label_names]).T
@@ -174,9 +175,50 @@ for j, label_name in enumerate(fit_label_names):
     ax.set_title("{} (hierarchical)".format(label_name))
 
 
+# Now do hierarchical with tidal deformability
+tidal_model = load_stan_model("tidal_model.stan")
 
 
-from sklearn.decomposition import FactorAnalysis
+fit_label_names = ("C", "Kappa_calc", "Mb", "MoI", "f2")
+D = len(fit_label_names)
+
+y = np.array([labels[ln] for ln in fit_label_names]).T
+
+
+data_dict = data=dict(x=x, y=y, N=N, M=M, D=D, Lambda= labels["Lambda"])
+
+p_opt = tidal_model.optimizing(data_dict,
+                         iter=10000, tol_param=1e-12, tol_obj=1e-12, 
+                         tol_grad=1e-12,tol_rel_grad=1e8)
+
+
+L  = len(fit_label_names)
+
+for j, label_name in enumerate(fit_label_names):
+    
+    fig, ax = plt.subplots()
+
+    # predict...
+    
+    alpha = p_opt["alpha_slope"][j] * labels["Lambda"] + p_opt["alpha_offset"][j]
+    beta = p_opt["beta_slope"][j] * labels["Lambda"]  + p_opt["beta_offset"][j]
+
+    for unique_eos_idx in list(set(waveform_eos_idx)):
+
+        color = cmap(float(unique_eos_idx)/M)
+
+        match = waveform_eos_idx == unique_eos_idx
+
+        yi = alpha[match] * x[match]**beta[match]
+
+        ax.plot(x[match], yi, c=color, alpha=0.5)
+        ax.scatter(x[match], y[match, j], c=color, vmin=0, vmax=M)
+
+    #fitted_labels[:, 2 + j] = alpha * x**beta
+
+    ax.set_title("{} (hierarchical; tidal)".format(label_name))
+
+
 
 
 central_idx = int(np.median(np.argmax(waveform_amplitude, axis=1)))
@@ -196,12 +238,38 @@ for i in range(25):
     ax.plot(aligned[i])
 
 
-model = FactorAnalysis(n_components=5)
-model.fit(aligned)
 
-fig, ax = plt.subplots()
-for i in range(5):
-    ax.plot(model.components_[i])
+
+# Need to be able to predict the differences,...
+y = np.argmax(waveform_amplitude, axis=1)
+
+show_labels = ("Lambda", "lambda",  "M1")
+
+fig, axes = plt.subplots(len(show_labels), 1)
+
+for i, (ax, label_name) in enumerate(zip(axes, show_labels)):
+    ax.scatter(labels[label_name], np.argmax(waveform_amplitude, axis=1))
+
+
+
+for i in range(N):
+    fig, ax = plt.subplots()
+    ax.plot(frequency, waveform_amplitude[i])
+    ax.axvline(labels["f1"][i] * 2900, c="#666666")
+
+raise a
+
+# OK, f2 is needed to align and re-align.
+
+# Can f2 be cast in terms of M1 and Lambda?
+
+# Fig 9 of 1604.00246 indicates that there is some relation between \kappa_2 and
+# f2, and refer to Eq 22.
+
+# Eq 22. is just a fit using kapa_2 to the 0.2th power.
+
+
+
 
 
 waveform_model = load_stan_model("waveforms.stan")
