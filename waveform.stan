@@ -24,6 +24,10 @@ transformed parameters {
 
 }
 model {
+  for (f in 1:F)
+    for (p in 1:P)
+      theta[f, p] ~ normal(0, 1);
+      
   for (i in 1:N)
     y[i] ~ normal(theta * DM[i]', sigma);
 }
