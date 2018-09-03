@@ -2,16 +2,18 @@ import numpy as np
 import scipy.optimize as op
 
 import stan_utils as stan
+from utils import strain_fitting_function_corrected
 
 
 class BNSWaveformEmulator(object):
 
-    def __init__(self, **kwargs):
-        pass
+    def __init__(self, eos_parameter_name="Kappa_calc", **kwargs):
+        self.eos_parameter_name = eos_parameter_name
+        return None
 
 
     @property
-    def parameter_names(self):
+    def hierarchical_parameter_names(self):
         return ("C", )
 
 
@@ -23,7 +25,7 @@ class BNSWaveformEmulator(object):
 
         :param waveform_parameters:
             A table of parameters for each of the numerical relativity waveforms
-            that has [n_waveforms, ] rows and contains at least the following
+            that has [n_waveforms, ] rows and may contain the following
             properties (as columns):
 
             The compactness `C`,
@@ -39,7 +41,6 @@ class BNSWaveformEmulator(object):
 
             ..math:
                 \lambda = \frac{2}{3}\overbar{kappa}_{2}^{T}\overbar{R}^5
-
 
         :param frequencies:
             The common frequencies (in kHz) that each numerical relativity
@@ -58,7 +59,7 @@ class BNSWaveformEmulator(object):
 
         # Hierarchically fit the waveform parameters.
         p_opt_hpm, data_dict = self._hierarchically_fit_waveform_parameters(
-            waveform_parameters, self.parameter_names)
+            waveform_parameters)
 
         # Frequency-shift waveforms so that they are aligned at mean f2.
         shifted_amplitudes, f2_coeff, f2_mean = self._frequency_shift_waveforms(
@@ -68,7 +69,7 @@ class BNSWaveformEmulator(object):
         # mass and dimensionless tidal deformability.
         labels = np.vstack([
             waveform_parameters["M1"],
-            1.0/waveform_parameters["Lambda"],
+            waveform_parameters[self.eos_parameter_name],
             data_dict["y"].T
         ]).T
 
@@ -98,7 +99,7 @@ class BNSWaveformEmulator(object):
         return self
 
 
-    def estimate_waveform_parameters(self, M, Lambda):
+    def estimate_waveform_parameters(self, M, eos_parameter):
         r"""
         Estimate the equation of state parameters given the mass of the primary
         :math:`M_1` and the dimensionless tidal deformability :math:`\Lambda`.
@@ -106,56 +107,61 @@ class BNSWaveformEmulator(object):
         :param M:
             A list-like object with the mass(es) of the primary.
 
-        :param Lambda:
-            A list-like object containing the dimensionless tidal deformability.
+        :param eos_parameter:
+            A list-like object containing the values of the EOS-like parameter
+            specified by the `eos__parameter_name` attribute of the model.
             This should be the same length as `M`.
 
         :returns:
-            The estimated numerical relativity parameters. Currently hard-coded
-            as:
-
-                The compactness `C`,
-                the calculated :math:`\kappa` value `Kappa_calc`,
-                the mass of the primary `M1`,
-                the frequency of the high-frequency peak `f2`,
-                the dimensionless tidal deformability `Lambda`
-
-                ..math:
-                    \Lambda = \left(\frac{\lambda}{M_{1}^{5}}\right)^{1/5}
-
-                where
-
-                ..math:
-                    \lambda = \frac{2}{3}\overbar{kappa}_{2}^{T}\overbar{R}^5
+            The estimated compactness, given the mass and equation of state
+            parameter.
         """
 
-        M, Lambda = (np.atleast_1d(M), np.atleast_1d(Lambda))
+        M, eos_parameter = (np.atleast_1d(M), np.atleast_1d(eos_parameter))
 
         P = self._p_opt_hpm["a"].shape[1]
-        design_matrix = np.vstack([Lambda, np.ones(Lambda.size)])
+        design_matrix = np.vstack([eos_parameter, np.ones(eos_parameter.size)])
         alpha = (self._p_opt_hpm["a"].T @ design_matrix)
         beta = (self._p_opt_hpm["b"].T @ design_matrix)
         return np.array([alpha[j] * M**beta[j] for j in range(P)]).T
 
 
-    def estimate_frequency_shifts(self, Lambda):
+    def estimate_frequency_shifts(self, eos_parameter):
         f2_mean, f2_coeff = self._p_opt_f2
-        return np.array([
-            (self._frequencies[np.argmax(self._amplitudes[self._waveform_parameters["Lambda"] == l])] - f2_mean) \
-            for l in Lambda])
 
+        eos_parameter = np.atleast_1d(eos_parameter)
+        frequency_shifts = np.zeros(eos_parameter.size, dtype=float)
 
-    def predict(self, M, Lambda, frequency_shifts=None):
+        for i, value in enumerate(eos_parameter):
+            amplitude_spectrum = self._amplitudes[self._waveform_parameters[self.eos_parameter_name] == value]
+            frequency_shifts[i] = self._frequencies[np.argmax(amplitude_spectrum)] - f2_mean
+
+        return frequency_shifts
+        
+
+    def predict(self, M, eos_parameter, frequency_shifts=None):
         r"""
-        Predict a post-merger gravitational wave signal given the mass and
-        dimensionless tidal deformability.
+        Predict a post-merger gravitational wave signal given the mass and a
+        parameter describing the equation of state.
+
+        :param M:
+            The mass. This can be a single value or an array-like.
+
+        :param eos_parameter:
+            A value that describes the equation of state. This parameter can be
+            described by the `eos_parameter_name` attribute of the model.
+
+        :param frequency_shifts: [optional]
+            The frequency shift to apply to the predicted amplitude spectrum.
+            If `None` is supplied then the frequency will be estimated given
+            the equation of state parameter.
         """
 
         # Calculate other properties given M, Lambda.
-        parameters = self.estimate_waveform_parameters(M, Lambda)
+        waveform_parameters = self.estimate_waveform_parameters(M, eos_parameter)
 
         # Include mass and tidal deformability.
-        parameters = np.vstack([M, 1.0/Lambda, parameters.T]).T
+        parameters = np.vstack([M, eos_parameter, waveform_parameters.T]).T
 
         # Whiten the parameters.
         mu, sigma = self._p_opt_label_whiten
@@ -168,7 +174,9 @@ class BNSWaveformEmulator(object):
 
         # Estimate the frequency shift needed for this waveform.
         if frequency_shifts is None:
-            frequency_shifts = self.estimate_frequency_shifts(Lambda)
+            frequency_shifts = self.estimate_frequency_shifts(eos_parameter)
+        else:
+            frequency_shifts = np.atleast_1d(frequency_shifts)
 
         # Shift the waveform.
         waveforms = np.zeros((N, self._frequencies.size), dtype=float)
@@ -180,6 +188,37 @@ class BNSWaveformEmulator(object):
 
         return waveforms
 
+
+    def test(self, amplitudes, psd, initial=None, supply_s2_for_ff=False):
+        r"""
+        Estimate the waveform parameters, given an amplitude spectrum.
+        """
+
+        # TODO: Don't assume that frequencies is the same as common frequencies
+        
+        if initial is None:
+            initial = [
+                np.mean(self._waveform_parameters["M1"]),
+                np.mean(self._waveform_parameters[self.eos_parameter_name]),
+                self._frequencies[np.argmax(amplitudes)] - self._p_opt_f2[0],
+            ]
+
+        # TODO: A better optimisation for this.
+        def cost(params):
+            M, eos_parameter, frequency_shift = params
+            prediction = self.predict(M, eos_parameter, [frequency_shift]) 
+            ff = strain_fitting_function_corrected(
+                amplitudes, prediction,
+                self._frequencies, psd,
+                self._p_opt_waveform["sigma"]**2 if supply_s2_for_ff else 0)
+
+            return 1 - ff
+
+        p_opt = op.fmin(cost, initial, disp=False, xtol=1e-8, ftol=1e-8,
+                        maxiter=100000, maxfun=100000)
+        # Offset the f2 shfit:
+        p_opt[-1] += self._p_opt_f2[0]
+        return p_opt
 
 
     def _frequency_shift_waveforms(self, waveform_parameters, frequencies,
@@ -199,8 +238,7 @@ class BNSWaveformEmulator(object):
 
 
 
-    def _hierarchically_fit_waveform_parameters(self, waveform_parameters,
-        parameter_names, **kwargs):
+    def _hierarchically_fit_waveform_parameters(self, waveform_parameters, **kwargs):
         r"""
         Fit a hierarchical model to the waveform parameters.
 
@@ -225,12 +263,14 @@ class BNSWaveformEmulator(object):
         """
 
 
-        y = np.array([waveform_parameters[pn] for pn in parameter_names]).T
+        y = np.array([waveform_parameters[pn] \
+                      for pn in self.hierarchical_parameter_names]).T
 
         N, D = y.shape
-        M1, Lambda = (waveform_parameters["M1"], waveform_parameters["Lambda"])
+        M1 = waveform_parameters["M1"]
+        eos_param = waveform_parameters[self.eos_parameter_name]
 
-        data_dict = dict(M1=M1, Lambda=Lambda, N=N, D=D, y=y)
+        data_dict = dict(M1=M1, eos_param=eos_param, N=N, D=D, y=y)
         kwds = dict(iter=10000, tol_param=1e-12, tol_obj=1e-12, tol_grad=1e-12,
                     tol_rel_grad=1e8)
         kwds.update(kwargs)
@@ -238,156 +278,3 @@ class BNSWaveformEmulator(object):
         p_opt = stan.load_stan_model("hpm.stan").optimizing(data_dict, **kwds)
 
         return (p_opt, data_dict)
-
-
-
-if __name__ == "__main__":
-
-    import pickle
-    import matplotlib.cm
-    from astropy.table import Table
-
-
-    with open("input_variables.pkl", "rb") as fp:
-        data = pickle.load(fp)
-
-    waveform_parameters, label_names, waveform_names, amplitudes, \
-        maximum_amplitude, waveform_ivar, scaled_asd, bns_maxima, _, __, ___, \
-        psd, frequencies = data
-
-
-    with open("pl_params.pkl", "rb") as fp:
-        eos_descr, eos_parameters, eos_coeff = pickle.load(fp)
-
-    waveform_parameters = Table.from_pandas(waveform_parameters)
-
-    waveform_parameters["M1"] = 1.375 * waveform_parameters["M1"]
-
-    # Need unscaled f2 values. Load from text.
-    t2 = Table.read("10.1103_t2.txt", format="ascii")
-    waveform_parameters["f2"] = 1000 * np.array(
-        [t2["f_2"][t2["model"] == wn][0] for wn in waveform_names])
-
-    waveform_parameters["f_max"] = 1000 * np.array(
-        [t2["f_max"][t2["model"] == wn][0] for wn in waveform_names])
-
-    
-    # Calculate tidal Love number for equal mass binaries (eq 14 of 1604.00246)
-    waveform_parameters["lambda"] = (2.0/3.0) * waveform_parameters["Meank2"] \
-                                  * waveform_parameters["MeanR"]**5
-
-    # Calculate dimensionless tidal deformability (p12 of 1604.00246).
-    waveform_parameters["Lambda"] = (waveform_parameters["lambda"]/waveform_parameters["M1"]**5)**(1.0/5)
-
-
-
-    # Fit the params.
-    emulator = BNSWaveformEmulator()
-    p_opt, data_dict = emulator._hierarchically_fit_waveform_parameters(
-        waveform_parameters, emulator.parameter_names)
-
-
-    eos_descriptions = [ea.split("-")[0] for ea in waveform_names]
-    unique_eos_descriptions = list(set([ea for ea in eos_descriptions]))
-    waveform_eos_idx = np.array(
-        [unique_eos_descriptions.index(ea) for ea in eos_descriptions])
-
-
-    x, y = (data_dict["M1"], data_dict["y"])
-
-    N, D = data_dict["y"].shape
-    E = len(unique_eos_descriptions)
-    design_matrix = np.vstack([waveform_parameters["Lambda"], np.ones(N)])
-    alpha = (p_opt["a"].T @ design_matrix).T
-    beta = (p_opt["b"].T @ design_matrix).T
-
-    cmap = matplotlib.cm.viridis
-
-    for j, parameter_name in enumerate(emulator.parameter_names):
-
-        fig, ax = plt.subplots()
-
-        for unique_eos_idx in list(set(waveform_eos_idx)):
-
-            color = cmap(float(unique_eos_idx)/E)
-
-            match = waveform_eos_idx == unique_eos_idx
-
-            yi = alpha[match, j] * x[match]**beta[match, j]
-
-            ax.plot(x[match], yi, c=color, alpha=0.5)
-            ax.scatter(x[match], y[match, j], c=color, vmin=0, vmax=E)
-
-        #fitted_labels[:, 2 + j] = alpha * x**beta
-
-        ax.set_title("{} (hierarchical; tidal)".format(parameter_name))
-
-
-    emulator = BNSWaveformEmulator()
-    emulator.fit(waveform_parameters, frequencies, amplitudes)
-
-    predictions = emulator.predict(waveform_parameters["M1"],
-                                   waveform_parameters["Lambda"])
-
-
-    from utils import strain_fitting_function_corrected
-
-    N, F = amplitudes.shape
-    fitting_factors = np.zeros(N)
-
-    for i in range(N):
-
-
-
-        fitting_factors[i] = strain_fitting_function_corrected(
-            amplitudes[i], predictions[i], frequencies, psd,
-            emulator._p_opt_waveform["sigma"]**2)
-
-
-    fig, ax = plt.subplots()
-    ax.hist(fitting_factors)
-
-    ax.set_xlabel("fitting factor")
-
-
-
-    loocv_fitting_factors = np.zeros(N)
-    for i in range(N):
-
-        mask = np.ones(N, dtype=bool)
-        mask[i] = False
-
-        emulator = BNSWaveformEmulator()
-        emulator.fit(waveform_parameters[mask], frequencies, amplitudes[mask])
-
-        frequency_shift = frequencies[np.argmax(amplitudes[i])] - emulator._p_opt_f2[0]
-
-        prediction = emulator.predict(waveform_parameters["M1"][i],
-                                      waveform_parameters["Lambda"][i],
-                                      frequency_shifts=[frequency_shift])
-
-        loocv_fitting_factors[i] = strain_fitting_function_corrected(
-            amplitudes[i], prediction, frequencies, psd,
-            emulator._p_opt_waveform["sigma"]**2)
-
-        print("LOOCV: {} {}".format(i, loocv_fitting_factors[i]))
-
-
-        fig, ax = plt.subplots()
-
-        ax.set_title("{0} {1} ff: {2:.2f}, loocv ff: {3:.2f}".format(i,
-            waveform_names[i],
-            fitting_factors[i], loocv_fitting_factors[i]))
-        ax.plot(frequencies, amplitudes[i], c="k")
-        ax.plot(frequencies, predictions[i], c="tab:blue")
-        ax.plot(frequencies, prediction[0], c="tab:red")
-
-        ax.axvline(waveform_parameters["f2"][i], c="#666666")
-
-        ax.semilogx()
-
-
-    fig, ax = plt.subplots()
-    ax.hist(loocv_fitting_factors)
-
-    ax.set_xlabel("loocv fitting factor")

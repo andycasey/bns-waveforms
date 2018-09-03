@@ -3,7 +3,7 @@ data {
   int<lower=1> D; // number of parameters
   int<lower=1> N; // number of waveforms
   real M1[N];     // mass of the primary
-  real Lambda[N]; // dimensionless tidal deformability
+  real eos_param[N]; // something like the dimensionless tidal deformability
   real y[N, D];   // the parameters to fit relations to
 
 }
@@ -21,8 +21,8 @@ transformed parameters {
   // TODO: Matrix algebra you idiot
   for (n in 1:N) {
     for (d in 1:D) {
-      alpha_[n, d] = a[1, d] * Lambda[n] + a[2, d];
-      beta_[n, d] = b[1, d] * Lambda[n] + b[2, d];
+      alpha_[n, d] = a[1, d] * eos_param[n] + a[2, d];
+      beta_[n, d] = b[1, d] * eos_param[n] + b[2, d];
     }
   }
 }

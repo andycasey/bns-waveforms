@@ -10,7 +10,7 @@ __all__ = ["load_stan_model", "sampling_kwds", "plots"]
 
 
 def load_stan_model(path, cached_path=None, recompile=False, overwrite=True,
-    verbose=True):
+    verbose=False):
     r"""
     Load a Stan model from a file. If a cached file exists, use it by default.
 
